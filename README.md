@@ -1,0 +1,2 @@
+A BED example using Paul's experimental data with different growth media. GOal: select or "design" the most informative set of experiments to achive highest model accuracy
+Ideal: Using simulated data from FBA and exiting pool of designs, train an invertiables network (CouplingFlow). Calculating EIG (not directly but a lower bound estimation using log_prob from MC sampling) for each design and select highest one
