@@ -1,0 +1,26 @@
+name: bed
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy=1.24.3
+  - pandas
+  - pip
+  - pip:
+      - tensorflow-intel==2.13.0
+      - keras==2.13.1
+      - protobuf>=3.20.3,<5
+      - typing-extensions<4.6.0
+      - tensorflow-estimator==2.13.0
+      - tensorflow-io-gcs-filesystem>=0.23.1
+      - wrapt>=1.11.0
+      - termcolor>=1.1.0
+      - libclang>=13.0.0
+      - flatbuffers>=23.1.21
+      - tensorboard==2.13.0
+      - tensorboard-data-server>=0.7.0,<0.8.0
+      - bayesflow
+      - cobra
+      - ray
+      - jax
