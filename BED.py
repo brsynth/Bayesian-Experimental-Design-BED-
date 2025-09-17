@@ -12,12 +12,14 @@ import jax.numpy as jnp
 import bayesflow as bf
 import matplotlib.pyplot as plt
 
+# TO _ DO: debug using bigger dataset, probably because of NaN values in y_cobra
 
-size = 1
+size = 100
 epochs = 50
 batch_size = 128
 
 df = pd.read_csv(f"Dataset_input\generated_iMN1515_{size}.csv")
+df = df.dropna(subset=[df.columns[-1]])
 
 X = df.iloc[:, :-1]
 y = df.iloc[:, -1]
@@ -28,7 +30,7 @@ n_media_components = X.shape[1]
 unique_counts = X.nunique(dropna=True)
 constant_media = unique_counts[unique_counts <= 1].index.tolist()
 n_constant_media = len(constant_media)
-variable_media = unique_counts[unique_counts == 2].index.tolist()
+variable_media = unique_counts[unique_counts >= 2].index.tolist()
 n_variable_media = len(variable_media)
 
 
@@ -107,9 +109,12 @@ for col in variable_media:
 df_reduced = df_reduced[training_variables].dropna()
 n_experiment = len(df_reduced)
 training_data = {
-    k: np.array(v).reshape(-1, 1) if np.array(v).ndim == 1 else np.array(v)
+    k: np.array(v).reshape(n_experiment, 1)
     for k, v in df_reduced.to_dict(orient="list").items()
 }
+
+print(training_data.keys())
+
 
 history = workflow.fit_offline(
         training_data,  # Train data is a dictionary with values as 2 dimensions arrays 
@@ -147,7 +152,7 @@ def apply_design_mask(prior_sample: dict, design: pd.Series) -> dict:
         masked[col] = res.reshape(-1, 1)
     return masked
 
-mean_list = []
+log_prob_mean = []
 std_list = []
 
 for i in range(n_designs):
@@ -158,11 +163,20 @@ for i in range(n_designs):
     masked_prior.update(design_dict)
     log_prob = workflow.log_prob(data=masked_prior)
     print(f"Design {i+1}/{n_designs}: {np.mean(log_prob)} , {np.std(log_prob)}")
-    mean_list.append(jnp.mean(log_prob))
+    log_prob_mean.append(jnp.mean(log_prob))
     std_list.append(jnp.std(log_prob))
-    
 
 
+N = 5  
+log_prob_mean_np = np.array(log_prob_mean)
+top_indices = np.argsort(log_prob_mean_np)[-N:][::-1]  
+
+top_designs = design_list.iloc[top_indices]
+top_log_probs = log_prob_mean_np[top_indices]
+
+print(f"Top {N} designs with highest log_prob mean:")
+for idx, (design, log_prob) in enumerate(zip(top_designs.values, top_log_probs), 1):
+    print(f"{idx}: Design: {design}, log_prob_mean: {log_prob}")
 
 
 
