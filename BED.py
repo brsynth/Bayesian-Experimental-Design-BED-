@@ -14,9 +14,9 @@ import matplotlib.pyplot as plt
 
 # TO _ DO: debug using bigger dataset, probably because of NaN values in y_cobra
 
-size = 100
-epochs = 50
-batch_size = 128
+size = 1
+epochs = 40
+batch_size = 32
 
 df = pd.read_csv(f"Dataset_input\generated_iMN1515_{size}.csv")
 df = df.dropna(subset=[df.columns[-1]])
@@ -48,7 +48,7 @@ def prior_sampling(names, lower = 0, upper = 1, n = 100, seed= None):
 
 def solver_fba(**kwargs):
 
-    full_medium = {col: 1 for col in constant_media}
+    full_medium = {col: 1 for col in complete_media}
     for k, v in kwargs.items():
         full_medium[k] = v.item()
     try:
@@ -64,39 +64,71 @@ def solver_fba(**kwargs):
 
         if y_cobra is None or np.isnan(y_cobra):
             y_cobra = np.nan
-            warning = {f"design_{k}": np.nan for k in kwargs}
+            warning = {k: np.nan for k in kwargs}
         else:
-            warning = {
-                f"design_{k}": 0 if warning[i] == 0 else 1
-                for i, k in enumerate(complete_media)
-                if k in kwargs
-            }
+            warning = kwargs
+            
     except Exception:
         y_cobra = np.nan
-        warning = {f"design_{k}": np.nan for k in kwargs}
+        warning = {k: np.nan for k in kwargs}
     
     return {"y_cobra": y_cobra, **warning}
 
-sample = prior_sampling(variable_media, n=1)
-result = solver_fba(**sample)
+
+def solver_fba_array(**kwargs):
+
+    first_key = next(iter(kwargs))
+    first_val = kwargs[first_key]
+    n = len(first_val)
+    results = []
+    for idx in range(n):
+        single_kwargs = {k: (v[idx] if isinstance(v, (np.ndarray, list)) else v) for k, v in kwargs.items()}
+        results.append(solver_fba(**single_kwargs))
+    combined = {}
+    for key in results[0].keys():
+        combined[key] = np.array([d[key] for d in results]).reshape(-1, 1)
+    return combined
+
+
+sample = prior_sampling(variable_media, n=4)
+result = solver_fba_array(**sample)
 # print(f"Sample: {sample}")
 # print(f"Result: {result}")
 
 training_variables = variable_media + [f"design_{name}" for name in variable_media] + ["y_cobra"]
-
-simulator = bf.simulators.make_simulator([prior_sampling, solver_fba])
+inference_variable = variable_media + ["y_cobra"]
+inference_conditions = [f"design_{name}" for name in variable_media] + ["y_cobra"]
+simulator = bf.simulators.make_simulator([prior_sampling, solver_fba_array])
 adapter = (
     bf.adapters.Adapter()
     .convert_dtype("float64", "float32")
-    .concatenate(variable_media, into="inference_variables")
+    .concatenate(inference_variable, into="inference_variables")
     .concatenate([f"design_{name}" for name in variable_media], into="inference_conditions")
     # .concatenate(["y_cobra"], into="summary_variables")
 )
 
+optimizer = keras.optimizers.Adam(
+    learning_rate=0.0001,
+    global_clipnorm=1.0
+)
+
+lr_scheduler = keras.callbacks.ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.5,
+    patience=2,
+    min_lr=1e-6,
+    verbose=1
+)
+inference_network = bf.networks.CouplingFlow(
+    num_layers=20,  
+    hidden_units=32 )
+
 workflow = bf.BasicWorkflow(
         simulator=simulator,
         adapter=adapter,
-        inference_network=bf.networks.CouplingFlow()
+        inference_network=inference_network,
+        optimizer=optimizer,
+        callbacks=lr_scheduler
     )
 
 df_reduced = df.drop(columns=constant_media, errors="ignore")
@@ -107,6 +139,7 @@ for col in variable_media:
 
 
 df_reduced = df_reduced[training_variables].dropna()
+df_reduced = df_reduced.sample(frac=1, random_state=42).reset_index(drop=True)
 n_experiment = len(df_reduced)
 training_data = {
     k: np.array(v).reshape(n_experiment, 1)
@@ -116,8 +149,9 @@ training_data = {
 print(training_data.keys())
 
 
+
 history = workflow.fit_offline(
-        training_data,  # Train data is a dictionary with values as 2 dimensions arrays 
+        training_data,  
         epochs=epochs,
         batch_size=batch_size,
         inference_variables=variable_media,
@@ -131,13 +165,16 @@ f = bf.diagnostics.plots.loss(history)
 
 # print(f"Model saved to {model_path}")
 #############################
-# Estimate log probability of the designs
+# choosing top design by logqφ(θ|y, d)
 exp_data = pd.read_csv("Dataset_input/iML1515_EXP.csv")
 exp_X = exp_data.iloc[:, :-1]
 exp_Y = exp_data.iloc[:, -1]
 
 design_list = exp_X[variable_media].drop_duplicates().reset_index(drop=True)
 n_designs = len(design_list)
+
+
+# Generate another set of θ|y samples from each design and calculate average logqφ(θ|y, d)
 n_sample_MC = 500
 prior_sample = prior_sampling(variable_media, n=n_sample_MC)
 
@@ -149,7 +186,8 @@ def apply_design_mask(prior_sample: dict, design: pd.Series) -> dict:
     masked = {}
     for col in prior_sample:
         res = np.array(prior_sample[col]) * design[col]
-        masked[col] = res.reshape(-1, 1)
+        # masked[col] = res.reshape(-1, 1)
+        masked[col] = res
     return masked
 
 log_prob_mean = []
@@ -158,25 +196,26 @@ std_list = []
 for i in range(n_designs):
     design = design_list.iloc[i]
     masked_prior = apply_design_mask(prior_sample, design)
+    y_simulator_prior = solver_fba_array(**masked_prior)              
     design_dict = {f"design_{col}": np.repeat(design[col], n_sample_MC).reshape(-1, 1) for col in variable_media}
-
-    masked_prior.update(design_dict)
-    log_prob = workflow.log_prob(data=masked_prior)
+    design_dict.update(y_simulator_prior)
+    # masked_prior.update(design_dict)
+    log_prob = workflow.log_prob(data=design_dict)
     print(f"Design {i+1}/{n_designs}: {np.mean(log_prob)} , {np.std(log_prob)}")
-    log_prob_mean.append(jnp.mean(log_prob))
-    std_list.append(jnp.std(log_prob))
-
+    log_prob_mean.append(jnp.nanmean(log_prob))
+    std_list.append(jnp.nanstd(log_prob))
 
 N = 5  
 log_prob_mean_np = np.array(log_prob_mean)
 top_indices = np.argsort(log_prob_mean_np)[-N:][::-1]  
 
-top_designs = design_list.iloc[top_indices]
-top_log_probs = log_prob_mean_np[top_indices]
+exp_top_design = exp_data.iloc[[top_indices]]
+exp_top_design = exp_top_design.drop(columns=constant_media, errors="ignore")
+exp_top_design = exp_top_design.rename(columns={col: f"design_{col}" for col in exp_top_design.columns if col in variable_media})
 
-print(f"Top {N} designs with highest log_prob mean:")
-for idx, (design, log_prob) in enumerate(zip(top_designs.values, top_log_probs), 1):
-    print(f"{idx}: Design: {design}, log_prob_mean: {log_prob}")
+
+
+
 
 
 
